@@ -1,0 +1,32 @@
+# --- Files we deliberately keep OUT of GitHub --------------------------
+
+# Caches (huge, regenerable, no point uploading)
+cache/
+cache_ig/
+__pycache__/
+
+# Logs from each scrape run (huge, regenerable)
+scrape_log.txt
+
+# The "previous snapshot" used by the change-tracker - lives only on your PC
+players_previous.xlsx
+
+# Helper output, only useful locally
+handles.csv
+ig_partial_*.csv
+ig_recovery_report.csv
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# --- Files that WILL be published ------------------------------------
+#   index.html         - the website
+#   missing_ig.html    - the helper page
+#   players.xlsx       - the data
+#   changes.xlsx       - the change report
+#   scraper.py + others - the source code (useful for anyone who wants to fork)
+#   README.md, requirements.txt - docs

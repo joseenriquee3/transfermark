@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Missing Instagram Helper</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <style>
+        * { box-sizing: border-box; }
+        body { font-family: -apple-system, "Segoe UI", Arial, sans-serif; margin: 0; background: #f4f6f9; color: #222; }
+        header { background: #1b1f24; color: #fff; padding: 16px 24px; }
+        header h1 { margin: 0; font-size: 20px; }
+        header .progress { margin-top: 4px; font-size: 13px; color: #b8c0cc; }
+        main { max-width: 760px; margin: 24px auto; padding: 0 16px 60px; }
+
+        .card { background: #fff; border: 1px solid #e3e8ef; border-radius: 10px; padding: 22px; margin-bottom: 14px; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
+        .name { font-size: 26px; font-weight: 700; margin: 0 0 6px; }
+        .meta { color: #555; font-size: 14px; margin-bottom: 14px; }
+        .meta b { color: #222; }
+
+        .links { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
+        .btn { padding: 10px 16px; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 600; text-decoration: none; display: inline-block; }
+        .btn-primary { background: #1a73e8; color: #fff; }
+        .btn-primary:hover { background: #1557b0; }
+        .btn-tm { background: #5c6b7a; color: #fff; }
+        .btn-tm:hover { background: #46535f; }
+        .btn-save { background: #2ea043; color: #fff; }
+        .btn-save:hover { background: #258039; }
+        .btn-skip { background: #6c757d; color: #fff; }
+        .btn-skip:hover { background: #565e64; }
+        .btn-none { background: #d73a49; color: #fff; }
+        .btn-none:hover { background: #b62a37; }
+
+        input[type="text"] {
+            width: 100%; padding: 12px 14px; font-size: 16px;
+            border: 2px solid #ccd2da; border-radius: 6px; margin-bottom: 12px;
+        }
+        input[type="text"]:focus { border-color: #1a73e8; outline: none; }
+        .hint { font-size: 12px; color: #666; margin-bottom: 14px; }
+
+        .actions { display: flex; gap: 10px; flex-wrap: wrap; }
+
+        .toolbar { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; align-items: center; }
+        .toolbar .left, .toolbar .right { display: flex; gap: 10px; flex-wrap: wrap; }
+        .stat { background: #fff; border: 1px solid #e3e8ef; border-radius: 6px; padding: 8px 12px; font-size: 14px; }
+        .stat b { color: #1a73e8; }
+        .filebox { background: #fff; border: 1px solid #e3e8ef; border-radius: 6px; padding: 12px; font-size: 14px; }
+        .filebox input { font-size: 13px; }
+
+        .done { text-align: center; padding: 40px 20px; }
+        .done h2 { color: #2ea043; }
+
+        #statusMessage { padding: 10px 14px; border-radius: 6px; font-weight: 600; font-size: 14px; margin-bottom: 14px; }
+        .status-info  { background: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb; }
+        .status-error { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+        .status-ok    { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Missing Instagram Helper</h1>
+        <div class="progress" id="progressLine">Loading players.xlsx...</div>
+    </header>
+    <main>
+        <div id="statusMessage" class="status-info">Loading...</div>
+
+        <div class="toolbar" id="toolbar" style="display:none;">
+            <div class="left">
+                <div class="stat">Done: <b id="doneCount">0</b> / <span id="totalCount">0</span></div>
+                <div class="stat">Skipped: <b id="skipCount">0</b></div>
+            </div>
+            <div class="right">
+                <button class="btn btn-save" id="downloadCsv">Download CSV</button>
+                <button class="btn btn-skip" id="resetBtn" title="Clear all saved entries">Reset</button>
+            </div>
+        </div>
+
+        <!-- Fallback file picker if players.xlsx can't be fetched directly -->
+        <div class="filebox" id="filePicker" style="display:none;">
+            Couldn't auto-load <code>players.xlsx</code>. Open it manually:
+            <input type="file" id="fileInput" accept=".xlsx">
+        </div>
+
+        <div id="cardArea"></div>
+    </main>
+
+    <script>
+    const STORAGE_KEY = "missing_ig_handles_v1";
+    let players = [];      // array of {Name, Age, Club, Transfermarkt, ...}
+    let queue = [];        // indexes into `players` that still need work
+    let cursor = 0;        // position within `queue`
+    let saved = {};        // { transfermarkt_url: "handle_or_url_or_NONE" }
+
+    function setStatus(msg, kind = "info") {
+        const el = document.getElementById("statusMessage");
+        el.textContent = msg;
+        el.className = kind === "error" ? "status-error" : kind === "ok" ? "status-ok" : "status-info";
+    }
+
+    function loadSaved() {
+        try { saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}"); }
+        catch (_) { saved = {}; }
+    }
+    function persistSaved() {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(saved));
+    }
+
+    async function loadWorkbook() {
+        loadSaved();
+        try {
+            const resp = await fetch("players.xlsx?t=" + Date.now(), { cache: "no-store" });
+            if (!resp.ok) throw new Error("HTTP " + resp.status);
+            const buf = await resp.arrayBuffer();
+            initFromArrayBuffer(buf);
+        } catch (err) {
+            // Couldn't auto-load — show file picker
+            document.getElementById("filePicker").style.display = "block";
+            setStatus("Couldn't auto-load players.xlsx. Either run this page through view_site.bat, or pick the file manually below.", "error");
+            document.getElementById("fileInput").addEventListener("change", async (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                const buf = await file.arrayBuffer();
+                document.getElementById("filePicker").style.display = "none";
+                initFromArrayBuffer(buf);
+            });
+        }
+    }
+
+    function initFromArrayBuffer(buf) {
+        const wb = XLSX.read(new Uint8Array(buf), { type: "array" });
+        const sheet = wb.Sheets[wb.SheetNames[0]];
+        players = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+
+        // Queue: rows where Instagram is empty (the missing 393 in your case).
+        queue = players
+            .map((_, i) => i)
+            .filter(i => !String(players[i].Instagram || "").trim());
+
+        document.getElementById("totalCount").textContent = queue.length;
+        document.getElementById("toolbar").style.display = "flex";
+
+        if (!queue.length) {
+            setStatus("Every player already has an Instagram. Nothing to do!", "ok");
+            return;
+        }
+
+        // Jump to first unsaved entry (so you can quit + come back).
+        cursor = 0;
+        while (cursor < queue.length && saved[players[queue[cursor]].Transfermarkt] !== undefined) {
+            cursor++;
+        }
+        setStatus(`Loaded ${players.length} players. ${queue.length} need Instagram.`, "ok");
+        renderCurrent();
+        updateCounters();
+    }
+
+    function updateCounters() {
+        const doneCount = Object.values(saved).filter(v => v && v !== "__SKIP__").length;
+        const skipCount = Object.values(saved).filter(v => v === "__SKIP__").length;
+        document.getElementById("doneCount").textContent = doneCount;
+        document.getElementById("skipCount").textContent = skipCount;
+        document.getElementById("progressLine").textContent =
+            `Player ${Math.min(cursor + 1, queue.length)} of ${queue.length} — ${doneCount} saved, ${skipCount} skipped`;
+    }
+
+    function renderCurrent() {
+        const area = document.getElementById("cardArea");
+
+        if (cursor >= queue.length) {
+            area.innerHTML = `
+                <div class="card done">
+                    <h2>All done</h2>
+                    <p>You went through every missing player. Click <b>Download CSV</b> at the top to get <code>handles.csv</code>, then run <code>apply_handles.py</code> to merge them into <code>players.xlsx</code>.</p>
+                </div>`;
+            return;
+        }
+
+        const p = players[queue[cursor]];
+        const searchQuery = encodeURIComponent(`${p.Name} instagram`);
+        const googleUrl = `https://www.google.com/search?q=${searchQuery}`;
+        const igSearchUrl = `https://www.instagram.com/explore/search/keyword/?q=${encodeURIComponent(p.Name)}`;
+
+        area.innerHTML = `
+            <div class="card">
+                <p class="name">${escapeHtml(p.Name)}</p>
+                <div class="meta">
+                    <b>Age:</b> ${escapeHtml(String(p.Age || "?"))} &nbsp;·&nbsp;
+                    <b>Club:</b> ${escapeHtml(p.Club || "?")} &nbsp;·&nbsp;
+                    <b>Position:</b> ${escapeHtml(p.Position || "?")} &nbsp;·&nbsp;
+                    <b>Value:</b> €${escapeHtml(String(p["Market value (€M)"] || "?"))}M
+                </div>
+                <div class="links">
+                    <a class="btn btn-primary" href="${googleUrl}" target="_blank" rel="noopener">Search Google — "${escapeHtml(p.Name)} instagram"</a>
+                    <a class="btn btn-tm" href="${p.Transfermarkt}" target="_blank" rel="noopener">Transfermarkt profile</a>
+                    <a class="btn btn-tm" href="${igSearchUrl}" target="_blank" rel="noopener">Search on Instagram</a>
+                </div>
+
+                <input type="text" id="handleInput" placeholder="Paste handle or full URL (e.g. lamineyamal or https://instagram.com/lamineyamal)" autocomplete="off">
+                <div class="hint">Just the handle (<code>lamineyamal</code>) or the whole URL — both work. Press Enter to save and move on.</div>
+
+                <div class="actions">
+                    <button class="btn btn-save" id="saveBtn">Save &amp; Next</button>
+                    <button class="btn btn-skip" id="skipBtn">Skip (review later)</button>
+                    <button class="btn btn-none" id="noneBtn">No Instagram exists</button>
+                </div>
+            </div>`;
+
+        const input = document.getElementById("handleInput");
+        input.focus();
+        input.addEventListener("keydown", (e) => {
+            if (e.key === "Enter") saveCurrent(input.value);
+        });
+        document.getElementById("saveBtn").addEventListener("click", () => saveCurrent(input.value));
+        document.getElementById("skipBtn").addEventListener("click", () => { saved[p.Transfermarkt] = "__SKIP__"; persistSaved(); next(); });
+        document.getElementById("noneBtn").addEventListener("click", () => { saved[p.Transfermarkt] = "__NONE__"; persistSaved(); next(); });
+    }
+
+    function saveCurrent(raw) {
+        const p = players[queue[cursor]];
+        const value = normalizeHandle(raw);
+        if (!value) {
+            setStatus("Enter a handle, or click Skip / No Instagram exists.", "error");
+            return;
+        }
+        saved[p.Transfermarkt] = value;
+        persistSaved();
+        next();
+    }
+
+    function next() {
+        cursor++;
+        renderCurrent();
+        updateCounters();
+        setStatus("", "info");
+        document.getElementById("statusMessage").textContent = "";
+    }
+
+    function normalizeHandle(raw) {
+        if (!raw) return "";
+        let s = String(raw).trim();
+        if (!s) return "";
+        // Pull handle out of a full URL.
+        const m = s.match(/instagram\.com\/([A-Za-z0-9_.]+)/i);
+        if (m) s = m[1];
+        s = s.replace(/^@/, "").replace(/\/+$/, "").toLowerCase();
+        if (!/^[a-z0-9_.]{2,}$/.test(s)) return "";
+        return "https://www.instagram.com/" + s + "/";
+    }
+
+    function escapeHtml(s) {
+        return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    }
+
+    // CSV download — pairs of (Transfermarkt URL, handle-or-status).
+    document.getElementById("downloadCsv").addEventListener("click", () => {
+        const rows = [["Transfermarkt", "Instagram"]];
+        Object.entries(saved).forEach(([tm, val]) => {
+            if (val === "__SKIP__") return;       // skipped = no decision yet, omit
+            const out = val === "__NONE__" ? "__NONE__" : val;
+            rows.push([tm, out]);
+        });
+        if (rows.length === 1) {
+            setStatus("Nothing saved yet.", "error");
+            return;
+        }
+        const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\r\n");
+        const blob = new Blob([csv], { type: "text/csv" });
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = "handles.csv";
+        a.click();
+        setStatus(`Downloaded handles.csv with ${rows.length - 1} entries. Now run apply_handles.py to merge them.`, "ok");
+    });
+
+    document.getElementById("resetBtn").addEventListener("click", () => {
+        if (!confirm("This wipes everything you've saved here. Continue?")) return;
+        saved = {};
+        persistSaved();
+        cursor = 0;
+        renderCurrent();
+        updateCounters();
+        setStatus("Cleared.", "ok");
+    });
+
+    loadWorkbook();
+    </script>
+</body>
+</html>

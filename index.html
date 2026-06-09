@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Player Data</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <style>
+        :root {
+            --accent: #007bff;
+            --accent-dark: #0056b3;
+        }
+        * { box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+            margin: 0;
+            background: #f4f6f9;
+            color: #222;
+        }
+        header {
+            background: #1b1f24;
+            color: #fff;
+            padding: 18px 24px;
+        }
+        header h1 { margin: 0 0 4px; font-size: 22px; }
+        header p { margin: 0; color: #b8c0cc; font-size: 14px; }
+        .wrap { padding: 20px 24px 60px; }
+
+        .controls {
+            margin: 18px 0;
+            display: flex;
+            gap: 12px;
+            align-items: flex-end;
+            flex-wrap: wrap;
+            padding: 16px;
+            border: 1px solid #e3e8ef;
+            border-radius: 8px;
+            background: #fff;
+        }
+        .field { display: flex; flex-direction: column; gap: 4px; }
+        .field label { font-size: 12px; font-weight: 600; color: #555; }
+        .controls input, .controls select {
+            padding: 9px 10px;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            font-size: 14px;
+            min-width: 140px;
+        }
+        .controls button {
+            padding: 10px 16px;
+            cursor: pointer;
+            background: var(--accent);
+            color: #fff;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 600;
+        }
+        .controls button:hover { background: var(--accent-dark); }
+        .controls button.secondary { background: #6c757d; }
+        .controls button.secondary:hover { background: #565e64; }
+
+        #statusMessage { margin: 14px 0; padding: 10px 12px; border-radius: 6px; font-weight: 600; font-size: 14px; }
+        .status-error { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+        .status-success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .status-info { background: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb; }
+
+        .table-scroll { overflow-x: auto; background: #fff; border-radius: 8px; border: 1px solid #e3e8ef; }
+        table { border-collapse: collapse; width: 100%; font-size: 14px; }
+        th, td { border-bottom: 1px solid #eef1f5; padding: 10px 12px; text-align: left; white-space: nowrap; }
+        thead th {
+            background: #f2f4f7;
+            position: sticky;
+            top: 0;
+            cursor: pointer;
+            user-select: none;
+        }
+        thead th:hover { background: #e8ebf0; }
+        tbody tr:nth-child(even) { background: #fafbfc; }
+        tbody tr:hover { background: #eef6ff; }
+        td a { color: var(--accent); text-decoration: none; }
+        td a:hover { text-decoration: underline; }
+        .count { font-size: 13px; color: #666; margin: 6px 0; }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Player Data</h1>
+        <p>All U28 players with market value &ge; &euro;1M</p>
+    </header>
+
+    <div class="wrap">
+        <div class="controls">
+            <div class="field">
+                <label for="searchBox">Search (name / club)</label>
+                <input type="text" id="searchBox" placeholder="Type to filter...">
+            </div>
+            <div class="field">
+                <label for="valueColumn">Value column</label>
+                <select id="valueColumn"></select>
+            </div>
+            <div class="field">
+                <label for="lowerBound">Min value</label>
+                <input type="number" id="lowerBound" placeholder="e.g. 5" step="any">
+            </div>
+            <div class="field">
+                <label for="upperBound">Max value</label>
+                <input type="number" id="upperBound" placeholder="e.g. 100" step="any">
+            </div>
+            <button id="openRangeInstagramButton">Open Instagram (in range)</button>
+            <button id="openAllInstagramButton" class="secondary">Open all Instagram</button>
+        </div>
+
+        <div id="statusMessage"></div>
+        <div class="count" id="rowCount"></div>
+        <div class="table-scroll"><table id="dataTable"></table></div>
+    </div>
+
+    <script>
+        // ---- Configuration ----
+        // The spreadsheet to load. Sits next to this file by default.
+        const DATA_FILE = 'players.xlsx';
+
+        let HEADERS = [];   // column names
+        let ROWS = [];      // array of objects keyed by header
+        let sortState = { col: null, dir: 1 };
+
+        // ---- Load & parse the spreadsheet ----
+        async function loadExcelFile() {
+            setStatus('Loading spreadsheet...', 'info');
+            try {
+                // Cache-buster: append a timestamp so the browser always fetches the
+                // freshest players.xlsx instead of serving a stale cached copy.
+                const response = await fetch(DATA_FILE + '?t=' + Date.now(), { cache: 'no-store' });
+                if (!response.ok) throw new Error(`Could not load ${DATA_FILE} (status ${response.status})`);
+                const data = new Uint8Array(await response.arrayBuffer());
+                const workbook = XLSX.read(data, { type: 'array' });
+                const sheet = workbook.Sheets[workbook.SheetNames[0]];
+
+                // Parse to array-of-objects so we control rendering (and the filter works correctly).
+                const json = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+                if (!json.length) throw new Error('The spreadsheet has no data rows.');
+
+                HEADERS = Object.keys(json[0]);
+                ROWS = json;
+
+                populateValueColumnPicker();
+                // Sort by market value, highest first, so the order is always correct
+                // no matter how the spreadsheet was saved.
+                const valueCol = parseInt(document.getElementById('valueColumn').value, 10);
+                if (!isNaN(valueCol)) sortBy(valueCol, -1);
+                else render(ROWS);
+                setStatus(`Loaded ${ROWS.length} players.`, 'success');
+            } catch (err) {
+                console.error(err);
+                document.getElementById('dataTable').innerHTML = '';
+                setStatus(err.message, 'error');
+            }
+        }
+
+        // Pick a sensible default "value" column (one whose name mentions value/price/€/market).
+        function populateValueColumnPicker() {
+            const select = document.getElementById('valueColumn');
+            select.innerHTML = '';
+            HEADERS.forEach((h, i) => {
+                const opt = document.createElement('option');
+                opt.value = i;
+                opt.textContent = h;
+                select.appendChild(opt);
+            });
+            const guess = HEADERS.findIndex(h => /value|price|market|€|eur|\bm\b|million/i.test(h));
+            select.value = guess >= 0 ? guess : 0;
+        }
+
+        // ---- Rendering ----
+        function render(rows) {
+            const table = document.getElementById('dataTable');
+            let html = '<thead><tr>';
+            HEADERS.forEach((h, i) => {
+                const arrow = sortState.col === i ? (sortState.dir === 1 ? ' ▲' : ' ▼') : '';
+                html += `<th data-col="${i}">${escapeHtml(h)}${arrow}</th>`;
+            });
+            html += '</tr></thead><tbody>';
+
+            rows.forEach(row => {
+                html += '<tr>';
+                HEADERS.forEach(h => {
+                    html += `<td>${linkify(String(row[h]))}</td>`;
+                });
+                html += '</tr>';
+            });
+            html += '</tbody>';
+            table.innerHTML = html;
+
+            document.querySelectorAll('#dataTable thead th').forEach(th => {
+                th.addEventListener('click', () => sortBy(parseInt(th.dataset.col, 10)));
+            });
+            document.getElementById('rowCount').textContent = `${rows.length} of ${ROWS.length} players shown`;
+        }
+
+        function linkify(text) {
+            const t = text.trim();
+            if (/^https?:\/\/[^\s]+$/i.test(t)) {
+                const label = t.includes('instagram.com') ? 'Instagram'
+                            : t.includes('transfermarkt') ? 'Transfermarkt'
+                            : t;
+                return `<a href="${t}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>`;
+            }
+            return escapeHtml(t);
+        }
+
+        function escapeHtml(s) {
+            return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        }
+
+        // ---- Sorting ----
+        function sortBy(colIndex, forcedDir) {
+            const key = HEADERS[colIndex];
+            if (forcedDir === 1 || forcedDir === -1) {
+                sortState.dir = forcedDir;
+            } else {
+                sortState.dir = (sortState.col === colIndex) ? -sortState.dir : 1;
+            }
+            sortState.col = colIndex;
+            const sorted = [...currentlyVisibleRows()].sort((a, b) => {
+                const av = a[key], bv = b[key];
+                const an = parseFloat(av), bn = parseFloat(bv);
+                if (!isNaN(an) && !isNaN(bn)) return (an - bn) * sortState.dir;
+                return String(av).localeCompare(String(bv)) * sortState.dir;
+            });
+            render(sorted);
+        }
+
+        // ---- Filtering ----
+        function currentlyVisibleRows() {
+            const q = document.getElementById('searchBox').value.trim().toLowerCase();
+            if (!q) return ROWS;
+            return ROWS.filter(row =>
+                HEADERS.some(h => String(row[h]).toLowerCase().includes(q))
+            );
+        }
+
+        function applySearch() {
+            sortState = { col: null, dir: 1 };
+            render(currentlyVisibleRows());
+        }
+
+        // ---- Instagram helpers ----
+        function parseNumber(v) {
+            // Pull the first number out of things like "€45.00m" or "12,5".
+            const m = String(v).replace(',', '.').match(/-?\d+(\.\d+)?/);
+            return m ? parseFloat(m[0]) : NaN;
+        }
+
+        function instagramLinksFromRows(rows) {
+            const links = [];
+            rows.forEach(row => {
+                HEADERS.forEach(h => {
+                    const val = String(row[h]);
+                    if (/instagram\.com/i.test(val)) {
+                        const m = val.match(/https?:\/\/[^\s]*instagram\.com[^\s]*/i);
+                        if (m) links.push(m[0]);
+                    }
+                });
+            });
+            return [...new Set(links)];
+        }
+
+        function openLinks(links) {
+            if (!links.length) {
+                setStatus('No Instagram links matched your criteria.', 'info');
+                return;
+            }
+            alert(`About to open ${links.length} Instagram tab(s). If nothing opens, allow pop-ups for this page in your browser.`);
+            links.forEach(l => window.open(l, '_blank'));
+            setStatus(`Opened ${links.length} Instagram tab(s).`, 'success');
+        }
+
+        function openAllInstagram() {
+            openLinks(instagramLinksFromRows(currentlyVisibleRows()));
+        }
+
+        function openInstagramInRange() {
+            const colIndex = parseInt(document.getElementById('valueColumn').value, 10);
+            const key = HEADERS[colIndex];
+            const lower = parseFloat(document.getElementById('lowerBound').value);
+            const upper = parseFloat(document.getElementById('upperBound').value);
+
+            if (isNaN(lower) || isNaN(upper)) {
+                setStatus('Min and Max value must both be numbers.', 'error');
+                return;
+            }
+            if (lower > upper) {
+                setStatus('Min value cannot be greater than Max value.', 'error');
+                return;
+            }
+
+            const inRange = currentlyVisibleRows().filter(row => {
+                const n = parseNumber(row[key]);
+                return !isNaN(n) && n >= lower && n <= upper;
+            });
+
+            if (!inRange.length) {
+                setStatus(`No players with "${key}" between ${lower} and ${upper}. Pick the column that holds the market value.`, 'info');
+                return;
+            }
+            openLinks(instagramLinksFromRows(inRange));
+        }
+
+        // ---- Status banner ----
+        function setStatus(message, type = 'info') {
+            const el = document.getElementById('statusMessage');
+            el.textContent = message;
+            el.className = type === 'error' ? 'status-error'
+                         : type === 'success' ? 'status-success'
+                         : 'status-info';
+        }
+
+        // ---- Wire up ----
+        document.getElementById('searchBox').addEventListener('input', applySearch);
+        document.getElementById('openAllInstagramButton').addEventListener('click', openAllInstagram);
+        document.getElementById('openRangeInstagramButton').addEventListener('click', openInstagramInRange);
+        window.onload = loadExcelFile;
+    </script>
+</body>
+</html>
