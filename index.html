@@ -339,32 +339,8 @@
                 setStatus('No Instagram links matched your criteria.', 'info');
                 return;
             }
-            // Chrome blocks tabs opened too fast in a single burst. We open the
-            // first few immediately (Chrome trusts the click) and pace the rest
-            // with a delay so Chrome treats each like a normal user action.
-            const IMMEDIATE = 2;            // first 2 tabs open at once
-            const DELAY_MS = 900;           // spacing for the rest
-            alert(
-                `About to open ${links.length} Instagram tab(s). They will appear ` +
-                `one per second so Chrome doesn't block them. Don't close THIS tab ` +
-                `until they all open. If they still get blocked, click the icon at ` +
-                `the end of the address bar and choose "Always allow pop-ups".`
-            );
-            links.slice(0, IMMEDIATE).forEach(l => window.open(l, '_blank'));
-            const rest = links.slice(IMMEDIATE);
-            rest.forEach((link, i) => {
-                setTimeout(() => {
-                    window.open(link, '_blank');
-                    const opened = IMMEDIATE + i + 1;
-                    setStatus(`Opening tabs: ${opened} / ${links.length}...`, 'info');
-                    if (opened === links.length) {
-                        setStatus(`Opened ${links.length} Instagram tab(s).`, 'success');
-                    }
-                }, (i + 1) * DELAY_MS);
-            });
-            if (!rest.length) {
-                setStatus(`Opened ${links.length} Instagram tab(s).`, 'success');
-            }
+            links.forEach(l => window.open(l, '_blank'));
+            setStatus(`Opened ${links.length} Instagram tab(s).`, 'success');
         }
 
         function openAllInstagram() {
