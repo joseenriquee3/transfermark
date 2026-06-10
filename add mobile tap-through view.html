@@ -81,6 +81,59 @@
         td a { color: var(--accent); text-decoration: none; }
         td a:hover { text-decoration: underline; }
         .count { font-size: 13px; color: #666; margin: 6px 0; }
+
+        /* ---- Tap-through overlay (mobile-friendly) ---------------------- */
+        #tapOverlay {
+            position: fixed; inset: 0; background: #1b1f24; color: #fff;
+            display: none; flex-direction: column; z-index: 9999;
+        }
+        #tapOverlay.active { display: flex; }
+        .tap-header {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 14px 16px; background: #0f1216; border-bottom: 1px solid #2a3038;
+            font-size: 14px;
+        }
+        .tap-header .progress { font-weight: 600; }
+        .tap-header button {
+            background: transparent; color: #b8c0cc; border: 1px solid #3a4250;
+            border-radius: 6px; padding: 8px 12px; font-size: 14px; cursor: pointer;
+        }
+        .tap-body {
+            flex: 1; display: flex; flex-direction: column;
+            align-items: center; justify-content: center; padding: 24px; text-align: center;
+        }
+        .tap-name { font-size: 30px; font-weight: 700; margin: 0 0 10px; line-height: 1.2; }
+        .tap-meta { color: #b8c0cc; font-size: 16px; margin-bottom: 28px; }
+        .tap-meta b { color: #fff; }
+
+        /* The IG button itself — designed to be a single fat tap target. */
+        .tap-open {
+            display: block; width: 100%; max-width: 380px;
+            padding: 22px; font-size: 22px; font-weight: 700;
+            background: #E1306C; color: #fff;
+            border: none; border-radius: 14px; text-decoration: none;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            text-align: center;
+        }
+        .tap-open:active { transform: scale(0.98); }
+        .tap-open[disabled] { background: #555; cursor: not-allowed; }
+        .tap-skip {
+            margin-top: 18px; background: transparent; color: #b8c0cc;
+            border: 1px solid #3a4250; border-radius: 8px;
+            padding: 10px 22px; font-size: 14px; cursor: pointer;
+        }
+        .tap-nav {
+            display: flex; gap: 12px; padding: 14px 16px;
+            background: #0f1216; border-top: 1px solid #2a3038;
+        }
+        .tap-nav button {
+            flex: 1; padding: 14px; font-size: 16px; font-weight: 600;
+            background: #2a3038; color: #fff; border: none; border-radius: 8px;
+            cursor: pointer;
+        }
+        .tap-nav button:disabled { opacity: 0.4; cursor: not-allowed; }
+        .tap-done { padding: 40px 24px; text-align: center; }
+        .tap-done h2 { color: #4ade80; margin: 0 0 10px; }
     </style>
 </head>
 <body>
@@ -108,12 +161,27 @@
                 <input type="number" id="upperBound" placeholder="e.g. 100" step="any">
             </div>
             <button id="openRangeInstagramButton">Open Instagram (in range)</button>
-            <button id="openAllInstagramButton" class="secondary">Open all Instagram</button>
+            <button id="tapThroughButton">Tap-through (phone)</button>
+            <button id="openAllInstagramButton" class="secondary">Open all (desktop only)</button>
         </div>
 
         <div id="statusMessage"></div>
         <div class="count" id="rowCount"></div>
         <div class="table-scroll"><table id="dataTable"></table></div>
+    </div>
+
+    <!-- Tap-through overlay: one tap = one IG tab. Designed for iPhone Chrome,
+         where the OS blocks any attempt to open multiple tabs from a single tap. -->
+    <div id="tapOverlay">
+        <div class="tap-header">
+            <span class="progress" id="tapProgress">1 / 1</span>
+            <button id="tapClose">Close</button>
+        </div>
+        <div class="tap-body" id="tapBody"></div>
+        <div class="tap-nav">
+            <button id="tapPrev">&larr; Back</button>
+            <button id="tapNext">Skip &rarr;</button>
+        </div>
     </div>
 
     <script>
@@ -307,6 +375,101 @@
             openLinks(instagramLinksFromRows(inRange));
         }
 
+        // ---- Tap-through (mobile) -----------------------------------------
+        // iPhone Chrome (and every iOS browser) refuses to open more than one
+        // tab from a single tap. So we present one player at a time with a
+        // single button -- one tap = one tab -- and auto-advance.
+        let TAP_QUEUE = [];   // array of {name, url, club, value, age}
+        let TAP_INDEX = 0;
+
+        function buildTapQueue() {
+            // Same filter as "Open Instagram in range": uses current search +
+            // value bounds if any are set, otherwise everyone visible.
+            const colIndex = parseInt(document.getElementById('valueColumn').value, 10);
+            const key = HEADERS[colIndex];
+            const lowerRaw = document.getElementById('lowerBound').value;
+            const upperRaw = document.getElementById('upperBound').value;
+            const lower = lowerRaw === '' ? -Infinity : parseFloat(lowerRaw);
+            const upper = upperRaw === '' ? Infinity : parseFloat(upperRaw);
+
+            const inRange = currentlyVisibleRows().filter(row => {
+                const n = parseNumber(row[key]);
+                return !isNaN(n) && n >= lower && n <= upper;
+            });
+
+            const nameKey = HEADERS.find(h => /name/i.test(h)) || HEADERS[0];
+            const clubKey = HEADERS.find(h => /club/i.test(h));
+            const ageKey = HEADERS.find(h => /age/i.test(h));
+
+            return inRange.flatMap(row => {
+                const links = instagramLinksFromRows([row]);
+                if (!links.length) return [];
+                return [{
+                    name: String(row[nameKey] || ''),
+                    url: links[0],
+                    club: clubKey ? String(row[clubKey] || '') : '',
+                    value: row[key],
+                    age: ageKey ? row[ageKey] : '',
+                }];
+            });
+        }
+
+        function startTapThrough() {
+            TAP_QUEUE = buildTapQueue();
+            if (!TAP_QUEUE.length) {
+                setStatus('No players with Instagram match the current filters.', 'error');
+                return;
+            }
+            TAP_INDEX = 0;
+            document.getElementById('tapOverlay').classList.add('active');
+            renderTap();
+        }
+
+        function renderTap() {
+            const body = document.getElementById('tapBody');
+            const progress = document.getElementById('tapProgress');
+            if (TAP_INDEX >= TAP_QUEUE.length) {
+                progress.textContent = `${TAP_QUEUE.length} / ${TAP_QUEUE.length}`;
+                body.innerHTML = `
+                    <div class="tap-done">
+                        <h2>Done.</h2>
+                        <p>You went through all ${TAP_QUEUE.length} players. Tap Close to go back.</p>
+                    </div>`;
+                document.getElementById('tapPrev').disabled = false;
+                document.getElementById('tapNext').disabled = true;
+                return;
+            }
+            const p = TAP_QUEUE[TAP_INDEX];
+            progress.textContent = `${TAP_INDEX + 1} / ${TAP_QUEUE.length}`;
+            body.innerHTML = `
+                <p class="tap-name">${escapeHtml(p.name)}</p>
+                <p class="tap-meta">
+                    ${p.club ? `<b>${escapeHtml(String(p.club))}</b>` : ''}
+                    ${p.age ? ` &middot; age ${escapeHtml(String(p.age))}` : ''}
+                    ${p.value !== undefined && p.value !== '' ? ` &middot; €${escapeHtml(String(p.value))}M` : ''}
+                </p>
+                <a class="tap-open" id="tapOpenLink" href="${p.url}" target="_blank" rel="noopener noreferrer">
+                    Open Instagram &rarr;
+                </a>
+                <button class="tap-skip" id="tapSkipBtn">Skip this one</button>
+            `;
+            // After tapping the link, auto-advance so the next player is ready
+            // for the next tap. iOS allows this because we're not opening
+            // anything new -- we're just changing the page contents.
+            document.getElementById('tapOpenLink').addEventListener('click', () => {
+                setTimeout(() => { TAP_INDEX++; renderTap(); }, 150);
+            });
+            document.getElementById('tapSkipBtn').addEventListener('click', () => {
+                TAP_INDEX++; renderTap();
+            });
+            document.getElementById('tapPrev').disabled = TAP_INDEX === 0;
+            document.getElementById('tapNext').disabled = TAP_INDEX >= TAP_QUEUE.length;
+        }
+
+        function closeTap() {
+            document.getElementById('tapOverlay').classList.remove('active');
+        }
+
         // ---- Status banner ----
         function setStatus(message, type = 'info') {
             const el = document.getElementById('statusMessage');
@@ -320,6 +483,14 @@
         document.getElementById('searchBox').addEventListener('input', applySearch);
         document.getElementById('openAllInstagramButton').addEventListener('click', openAllInstagram);
         document.getElementById('openRangeInstagramButton').addEventListener('click', openInstagramInRange);
+        document.getElementById('tapThroughButton').addEventListener('click', startTapThrough);
+        document.getElementById('tapClose').addEventListener('click', closeTap);
+        document.getElementById('tapPrev').addEventListener('click', () => {
+            if (TAP_INDEX > 0) { TAP_INDEX--; renderTap(); }
+        });
+        document.getElementById('tapNext').addEventListener('click', () => {
+            if (TAP_INDEX < TAP_QUEUE.length) { TAP_INDEX++; renderTap(); }
+        });
         window.onload = loadExcelFile;
     </script>
 </body>
